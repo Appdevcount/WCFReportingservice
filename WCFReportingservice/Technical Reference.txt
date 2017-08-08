@@ -1,0 +1,298 @@
+﻿Message Exchange Pattern describes how the client and the wcf service exchange messages. WCF supports the following 3 Message Exchange Patterns. The default Message Exchange Pattern in WCF is Request-Reply.
+====================================================
+	1. Request-Reply (Default)
+	2. One-Way 
+	3. Duplex
+
+	Request-Reply:
+	1. This is the default Message Exchange Pattern
+	2. Client sends a message to a WCF Service and then waits for a reply. During this time the client client stops processing until a response is received from the wcf service.
+	3. The client waits for the service call to complete even if the operation return type is void.
+	4. All WCF bindings except the MSMQ-based bindings support the Request-Reply Message Exchange Pattern.
+	5. IsOneWay parameter of OperationContract attribute specifies the Message Exchange Pattern. The default value for IsOneWay parameter is false. This means that, if we don't specify this parameter, then the Message Exchange Pattern is Request/Reply. 
+	eg:
+	[ServiceContract]
+	public interface ISampleService
+	{
+		[OperationContract(IsOneWay=false)]
+		string RequestReplyOperation();
+
+		[OperationContract(IsOneWay = false)]
+		string RequestReplyOperation_ThrowsException();
+	}
+
+	In case of One-Way operation, only one message is exchanged between the client and the service. The client makes a call to the service method, but does not wait for a response message. So, in short, the receiver of the message does not send a reply message, nor does the sender of the message expects one. 
+	As messages are exchanged only in one way, faults if any while processing the request does not get reported.
+	Clients are unaware of the server channel faults until a subsequent call is made.
+	eg:
+	To make an operation one-way, set IsOneWay=true.
+	[OperationContract(IsOneWay = true)]
+	string OneWayOperation();
+
+
+Duplex messaging pattern can be implemented using Request/Reply or OneWayoperations
+=================================================================================
+	eg:
+
+    // Associate callback contract with service contract using CallbackContract attribute
+    [ServiceContract(CallbackContract = typeof(IReportServiceCallback))]
+    public interface IReportService
+    {
+        // Since we have not set IsOnway=true, the operation is Request/Reply operation
+        [OperationContract]
+        void ProcessReport();
+    }
+
+    // This is the callback contract and not required to declare servicecontract attribute here
+    public interface IReportServiceCallback
+    {
+        // Since we have not set IsOnway=true, the operation is Request/Reply operation
+        [OperationContract]
+        void Progress(int percentageComplete);  
+        //percentage complete is from ProcessReport() and will continuously pump this method output to Client as status from service while its waiting for service task completion.
+    }
+
+	public class ReportService : IReportService
+		{
+			public void ProcessReport()
+			{
+				for (int i = 1; i <= 100; i++)
+				{
+					// some logic to process the report
+					Thread.Sleep(100);
+					// Get the callback channel to send messages to the client
+					OperationContext.Current.
+						GetCallbackChannel<IReportServiceCallback>().Progress(i);
+				}
+			}
+		}
+   
+	   // The Form1 class implements IReportServiceCallback interface (The client(any custom) has to implement the callback interface to get the continuous messages as status from service while waiting for service task completion)
+			public partial class Form1 : Form, ReportService.IReportServiceCallback
+			{
+				public Form1()
+				{
+					InitializeComponent();
+				}
+
+				private void btnProcessReport_Click(object sender, EventArgs e)
+				{
+		//Using InstanceContext to create current/class object
+					InstanceContext instanceContext = new InstanceContext(this);
+		//Needs to pass callbackcontract implemented class object while creating Proxy class object
+					ReportService.ReportServiceClient client =
+						new ReportService.ReportServiceClient(instanceContext);
+
+					client.ProcessReport();
+				}
+
+		// This method recevies the progress update from the WCF service
+		// Report processing percentage is displayed in the textbox control
+				public void Progress(int percentageComplete)
+				{
+					textBox1.Text = percentageComplete.ToString() + " % completed";
+				}
+
+	At this point we will get the following exception.
+	This operation would deadlock because the reply cannot be received until the current Message completes processing. If you want to allow out-of-order message processing, specify ConcurrencyMode of Reentrant or Multiple on ServiceBehaviorAttribute.
+	//This happens as the client will wait for service response on completion but there is continuous message from callback contract sent to client
+	To fix the above error, we need to do 2 things
+	a) In ReportService.cs file, set ConcurrencyMode to Reentrant as shown below.
+		  [ServiceBehavior(ConcurrencyMode=ConcurrencyMode.Reentrant)]
+		  public class ReportService : IReportService
+	b) In Form1.cs file in DuplexClient project, set UseSynchronizationContext to falseas shown below.
+	//Client class which implemented the callback contract attribute must set CallbackBehavior attribute UseSynchronizationContext parameter to false
+		  [CallbackBehavior(UseSynchronizationContext = false)]
+		  public partial class Form1 : Form, ReportService.IReportServiceCallback
+
+	At this point run the service. Update the service reference in the DuplexClient project. Finally run the client project and click Process Report button. So, we have just seen how to implement Duplex messaging pattern using Request/Reply operations.
+
+	Now, let's discuss implementing Duplex messaging pattern using OneWay operations just using [OperationContract(IsOneWay = true)] attribute and removing  ConcurrencyMode ,UseSynchronizationContext at service and client side respectively .
+
+sending large binary messages in WCF using MTOM for better performance.
+=========================================================================
+	The default message encoding mechanism in WCF is Text, which base64 encodes data. This has the following 2 disadvantages
+	1. Base64 encoding bloats the message size by approximately 33%.
+	2. Involves additional processing overhead to base64 encode and decode. 
+	The preferredh approach to send large binary messages in WCF is to use MTOM message encoding. MTOM is an interoperable standard and stands for Message Transmission Optimization Mechanism. MTOM does not base64 encode data. This also means, the additional processing overhead to base64 encode and decode data is removed. Hence, MTOM can significantly improve the overall message transfer performance. 
+
+	//For this we will make file download task through WCF in text based Message encoding and Mtom based encoding while binding thru Config file. Using Fiddler , will monitor the performance difference
+
+	Onrunning ..We get might get the following error.
+	The maximum message size quota for incoming messages (65536) has been exceeded. To increase the quota, use the MaxReceivedMessageSize property on the appropriate binding element.
+
+	To fix this specify maxReceivedMessageSize and maxArrayLength both in the WCF service and the client.
+	<bindings>
+	  <wsHttpBinding>
+		<binding name="wsHttp" messageEncoding="Text"    //  messageEncoding="Mtom"
+				  maxReceivedMessageSize="700000">
+		  <readerQuotas maxArrayLength="700000"/>
+		</binding>
+	  </wsHttpBinding>
+
+	</bindings>
+
+	Got this error while compiling
+	Error		Unable to copy file "C:\Users\MScount\Documents\Visual Studio 2012\Visual Studio 2013\Projects\WCFReportingservice\WCFReportingservice\bin\Debug\WCFReportingservice.dll" to "bin\Debug\WCFReportingservice.dll". The process cannot access the file 'bin\Debug\WCFReportingservice.dll' because it is being used by another process.	WindowsServiceHost
+	To fix this I stopped all the hosts of WCFReportingservice and compiled again -That fixed the issue
+	Got another error this time
+	Error		Inconsistent accessibility: return type 'WCFReportingservice.FileProp' is less accessible than method 'WCFReportingservice.IFileHandlingTask.FileDownload()'	C:\Users\MScount\Documents\Visual Studio 2012\Visual Studio 2013\Projects\WCFReportingservice\WCFReportingservice\IReportingservice.cs	44	18	WCFReportingservice
+	To fix this I changed the access specifier to Public - public class FileProp
+
+Service Instance Context modes
+==============================
+	[ServiceBehavior(InstanceContextMode = InstanceContextMode.Single)] ... Percall   Persession
+
+Common interview question: How do you design a WCF service? Would you design it as a PerCall service or PerSession service?
+==============================================================================================================================
+	This is a tricky question. We can't blindly say one is better over the other. 
+	1. PerCall and PerSession services have different strengths and weaknesses. 
+
+	2. If you prefer using object oriented programming style, then PerSession is your choice. On the other hand if you prefer SOA (Service Oriented Arhcitecture) style, then PerCall is your choice.
+
+	3. In general, all things being equal, the trade-off is performance v/s scalability. PerSession services perform better because the service object does not have to be instantiated on subsequent requests. PerCall services scale better because the service objects are destroyed immediately after the method call returns.
+
+	So the decision really depends on the application architecture, performance & scalability needs. 
+	
+WCF Queries  with respect to session 
+====================================	
+	Does all bindings support sessions
+	No, not all bindings support sessions. For example basicHttpBinding does not support session. If the binding does not support session, then the service behaves as a PerCall service.
+
+	How to control the WCF service session timeout?
+	The default session timeout is 10 minutes. If you want to increase or decrease the default timeout value, 
+	Step 1: Set receiveTimeout attribute of the respective binding element as shown below. In the example below, we have configured the session timout for 10 seconds.
+	<bindings>
+	  <netTcpBinding>
+		<binding name="netTCP" receiveTimeout="00:00:10"></binding>
+	  </netTcpBinding>
+	</bindings>
+
+	Step 2: Associate the binding element with the endpoint using bindingConfigurationattribute as shown below.
+	<endpoint address="SimpleService"
+			  binding="netTcpBinding"
+			  contract="SimpleService.ISimpleService"
+			  bindingConfiguration="netTCP"/>
+
+	What happens when the session timeout is reached
+	When the session timeout is reached, the connection to the wcf service is closed. As a result, the communication channel gets faulted and the client can no longer use the same proxy instance to communicate with the service. This also means that along with the session, the data in the service object is also lost.
+
+		To retrieve SessionId from the client application use 
+	procyClassInstance.InnerChannel.SessionId property
+
+	To retrieve SessionId from the WCF service use 
+	OperationContext.Current.SessionId
+
+	The client-side and service-side session IDs are corelated using the reliable session id. So, if TCP binding is being used with reliable sessions disabled then the client and server session id's will be different. On the other hand, if reliable sessions are enabled, the session id's will be same.
+
+	Enable reliable sessions using the binding element as shown below
+	<bindings>
+	  <netTcpBinding>
+		<binding name="netTCP" receiveTimeout="00:00:10">
+		  <reliableSession enabled="true"/>
+		</binding>
+	  </netTcpBinding>
+	</bindings>
+
+	With wsHttpBinding, irrespective of whether reliable sessions are enabled or not, the session id's will be same. 
+
+Session modes
+==============
+	Use SessionMode enumeration with the Service Contract to require, allow, or prohibit bindings to use sessions. SessionMode enum has the following members.
+
+	Allowed : Service contract supports sessions if the binding supports them. This is the default if we have not explicitly specified the SessionMode on Service contract. 
+
+	NotAllowed : Service contract does not support bindings that initiate sessions.
+
+	Required : Service contract requires a binding that supports session. 
+
+
+Communication channel faulted exception
+=======================================
+	Catch the CommunicationException
+
+concurrency mode in WCF
+======================
+	Multiple threads executing the application code simultaneously is called as concurrency
+	[ServiceBehavior(ConcurrencyMode = ConcurrencyMode.Single)]
+
+	ConcurrencyMode can be 
+	Single
+	Reentrant
+	Multiple
+
+    [ServiceBehavior(ConcurrencyMode = ConcurrencyMode.Single,
+        InstanceContextMode = InstanceContextMode.PerSession)]
+
+Throttling settings for the service
+===================================
+	Throughput is the amount of work done in a given time. In addition to Service Instance Context Mode and Concurrency Mode, Throttling settings also influence the throughput of a WCF service.
+
+	Throttling settings can be specified either in the config file or in code
+
+	Throttling settings in config file
+	<behaviors>
+	  <serviceBehaviors>
+		<behavior name="throttlingBehavior">
+		  <serviceThrottling
+			maxConcurrentCalls="3"
+			maxConcurrentInstances="3"
+			maxConcurrentSessions="100"/>
+		</behavior>
+	  </serviceBehaviors>
+	</behaviors>
+
+	Throttling settings in code
+	using (ServiceHost host = new ServiceHost(typeof(SimpleService.SimpleService)))
+	{
+		ServiceThrottlingBehavior throttlingBehavior = new ServiceThrottlingBehavior
+		{
+			MaxConcurrentCalls = 3,
+			MaxConcurrentInstances = 3,
+			MaxConcurrentSessions = 100
+		};
+		host.Description.Behaviors.Add(throttlingBehavior);
+	Please note: maxConcurrentSessions is the sum of all types of sessions, that is 
+	1. Application sessions
+	2. Transport sessions
+	3. Reliable sessions
+	4. Secure sessions
+
+
+The following 6 attributes has the ProtectionLevel named parameter, which implies that ProtectionLevel can be specified using any of the below 6 attributes. They are specified in the order of precedence. For example ProtectionLevel specified at an operation contract level overrides the ProtectionLevel specified at the service contract level.
+================
+ServiceContractAttribute
+      OperationContractAttribute
+            FaultContractAttribute
+            MessageContractAttribute
+                     MessageHeaderAttribute
+                     MessageBodyMemberAttribute
+
+Authentication in WCF
+==================== 
+	Can check the authentication details of WCF service from client side thru code as below
+
+				Console.WriteLine("Is Authenticated: " +
+					ServiceSecurityContext.Current.PrimaryIdentity.IsAuthenticated);
+				Console.WriteLine("Authentication Type: " +
+					ServiceSecurityContext.Current.PrimaryIdentity.AuthenticationType);
+				Console.WriteLine("Username: " +
+					ServiceSecurityContext.Current.PrimaryIdentity.Name);
+
+	To customize the security mode for a binding, use mode attribute of security element with in the respective binding 
+	<security mode="Message">               
+				<message clientCredentialType="Windows"/>
+			  </security>
+
+WCF Security
+============
+	The following are the defaults of wsHttpBinding 
+	Security Mode - Message
+	ClientCredentialType - Windows
+
+	The following MSDN article contains all the system provided bindings and their security defaults.
+	http://msdn.microsoft.com/en-us/library/ms731092(v=vs.110).aspx
+
+
+Part 52 is Good , not tried yet - for alert site doesnot have secure bindings(SSL) and cannot accept SSL connections in IIS
+

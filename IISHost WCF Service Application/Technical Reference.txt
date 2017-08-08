@@ -1,0 +1,91 @@
+﻿To host a wcf service in IIS, create a file with .svc extension. This file contains ServiceHost directive. The Service attribute of ServiceHost directive, specifies which service this file points to
+The ServiceHost directive in .svc file is responsible for creating an instance of ServiceHost when required. There is no need to write code to instantiate and start ServiceHost, as we did with self hosting. 
+Step 1: Right click on HelloService solution in Solution Explorer and select Add - New Web Site. Fill in the details as shown in the image below. 
+Step 2: Delete IService.cs and Service.cs files that are present under App_Codefolder.
+Step 3: Add a reference to HelloService WCF library. To do this, right click onHelloService\HelloServiceIISHost project in Solution Explorer and select "Add Reference" option and add a reference to HelloService project
+Step 4: Rename Service.svc file to HelloService.svc. 
+Step 5: Copy and paste the following code in web.config file
+Step 6: Configure IIS
+
+Referred below link for resolving some issues in configuring service in IIS
+ http://blogs.msmvps.com/bernard/2009/11/04/warning-authorization-cannot-verify-access-to-path-c-inetpub-wwwroot/
+
+Was able to generate wsdl document from IIS for client in proxy class generation, but had issue while invoking the IIS hosted service
+from client application -throwing exception as 
+	There was no endpoint listening at http://localhost:8050/WCFEmployeeservice that could accept the message. 
+	This is often caused by an incorrect address or SOAP action
+Later to fix this I changed the endpoint Ports and set differently for eah hosts(Console,Winform,Winservice,IIS) -this worked in fixing the issue
+
+Rebuild and tested all host projects for error checking and did IIS reset
+C:\Windows\system32>IISRESET /STOP
+Attempting stop...
+Internet services successfully stopped
+C:\Windows\system32>IISRESET /START
+Attempting start...
+Internet services successfully started
+
+Service issues in IIS
+
+	Now - HTTP Error 500.24 - Internal Server Error - while checking service at IIS
+	Refer for currently occurring error - http://www.topwcftutorials.net/2012/06/an-aspnet-setting-has-been-detected-that.html
+	Now -Could not find a base address that matches scheme net.tcp for the endpoint with binding NetTcpBinding. Registered base address schemes are [http]. -while checking service at IIS
+	Also - alert site doesnot have secure bindings(SSL) and cannot accept SSL connections in IIS
+	Authorization warning while adding the service in IIS -The server is configured to use pass-through authentication with a built-in account to access the specified physical path. However, IIS Manager cannot verify whether the built-in account has access. Make sure that the application pool identity has Read access to the physical path. If this server is joined to a domain, and the application pool identity is NetworkService or LocalSystem, verify that <domain>\<computer_name>$ has Read access to the physical path. Then test these settings again.
+
+Reconfigured newly again
+	Authorization warning while adding the service in IIS -The server is configured to use pass-through authentication with a built-in account to access the specified physical path. However, IIS Manager cannot verify whether the built-in account has access. Make sure that the application pool identity has Read access to the physical path. If this server is joined to a domain, and the application pool identity is NetworkService or LocalSystem, verify that <domain>\<computer_name>$ has Read access to the physical path. Then test these settings again.
+	Got below error while accessing .svc file in IIS
+	HTTP Error 500.24 - Internal Server Error
+	An ASP.NET setting has been detected that does not apply in Integrated managed pipeline mode.
+
+	There are 2 suggestions provided here http://stackoverflow.com/questions/14445252/http-error-500-24-internal-server-error-an-asp-net-setting-has-been-detected-t
+	as setting apppool to .NETV4.5 Classic instead of .NETV4.5 or Disable ASP.NET Impersonation for the application in IIS..
+	Tried both and working in both(able to generate wsdl document).. sticking to option 2(Disable ASP.NET Impersonation for the application in IIS)
+	
+	Able to access service but not able to login to database and access the data as below
+	Cannot open database "TESTInternetMVC" requested by the login. The login failed.
+	Login failed for user 'IIS APPPOOL\.NET v4.5'.
+	Referred this to resolve the issue by creating IIS APPPOOL\.NET v4.5 as the database user - https://social.msdn.microsoft.com/Forums/vstudio/en-US/f74d9d5a-cacd-4a4a-85e4-012007bb5df6/login-failed-for-user-iis-apppoolaspnet-v40?forum=wcf
+	But after this got the error as - Login failed for user ''.
+
+	Changed the Identity for this issue(as per http://forums.asp.net/t/1510479.aspx?Login+failed+for+user+IIS+APPPOOL+DefaultAppPool) to Network service from Application pool identity but got error as
+	The requested service, 'http://siraj/WCFReportingservice/WCFReportingservice.svc/Reportingservice' could not be activated. See the server's diagnostic trace logs for more information
+
+	Changed Identity again to Local and hardcoded my password details in config file for SQLserver.. now error as below
+	The EXECUTE permission was denied on the object 'spGetWCFEmployee', database 'TESTInternetMVC', schema 'dbo'.
+
+	some links - https://social.msdn.microsoft.com/Forums/sqlserver/en-US/73eee0b4-9eee-4a71-a448-3e3eef9ee404/sqlexpress-not-accepting-iis-apppooldefaultapppool-as-valid-login?forum=sqlsetupandupgrade
+	http://rarcher.azurewebsites.net/Post/PostContent/20  
+		USE [master]
+	GO
+	CREATE LOGIN [IIS APPPOOL\Web2] FROM WINDOWS WITH DEFAULT_DATABASE=[testbase]
+	GO
+
+	USE [testbase]
+	GO
+	CREATE USER [IIS APPPOOL\Web2] FOR LOGIN [IIS APPPOOL\Web2]
+	GO
+	EXEC sp_addrolemember N'db_owner', N'IIS APPPOOL\Web2'
+	GO
+
+	|==================================================================================================================================================================|
+	|Note: Have done many tweaks for IIS Host config file- not the same as other hosts .. Maintaing this config file(web , not app) separatel and have it as reference |
+	|==================================================================================================================================================================|
+
+Finally succeeded in one way
+===========================
+	Used select SUSER_NAME() to find sql login user of WCF service from IIS - 
+	Returned result as NT AUTHORITY\SYSTEM ,not using the app pool identity(custom created SQLuser -IIS APPPOOL\SQLServerAppPool).. But still failing while executing SPROC -Execute permission denied for the sp object... So added access to TESTINTERNETMVC DB objects for NT AUTHORITY\SYSTEM.. Its now able to access and do CRUD
+
+	Taking this as example , trying to make IIS use app pool identity(custom created SQLuser -IIS APPPOOL\SQLServerAppPool) for DB connection
+
+	Analysis result and Fix
+	Have changed the Identity from LOCAL SYSTEM to Applicationpool identity in Advanced settings of IIS SPECIFIC APPPOOLIDENTITY.. This allowed WCF service to login to DB using IIS APPPOOL\SQLServerAppPool ..but failed with The EXECUTE permission was denied on the object 'spGetWCFEmployee', database 'TESTInternetMVC', schema 'dbo'. .. To resolve this ,have added the the user to db_owner membership.. EVRYTHING WORKING AS EXPECTED NOW
+
+Complete CRUD in WCF with ADO.NET
+=================================
+   Adding [spUpdateWCFEmployee] SPROC feature to WCF
+This one with Entity framework not continued to implement - yet to try
+
+Implementing WCF REST based service implementation
+===================================================
